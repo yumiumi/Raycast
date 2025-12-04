@@ -91,24 +91,22 @@ int main() {
     Vector2 camera_plane = { 0.f, 0.66f }; // is always perpendicular on the player direction
     Vector2 ray_dir = { 0.f, 0.f };
 
-    double cur_time = 0.f;
-    double old_time = 0.f;
-
     SetTargetFPS(60);
     rlImGuiSetup(true);
     while (!WindowShouldClose()) {
 
         // raycasting loop
         for (int x = 0; x < scr_width; x++) {
-            // calculate ray position and direction
             float camera_x = 2 * x / float(scr_width) - 1; // x-coordinate in camera space (value from -1 to 1)
             player_dir = Vector2Normalize(player_dir);
             camera_plane = Vector2Normalize(camera_plane);
-            // calculate half length of camera_plane from given angle
-            float fov = std::tan(DEG2RAD * (90.0f / 2.f));
+
+            // half length of camera_plane from given angle
+            float fov = std::tan(DEG2RAD * (66.f / 2.f));
+
+            // calculate ray direction
             ray_dir.x = player_dir.x + camera_plane.x * fov * camera_x;
             ray_dir.y = player_dir.y + camera_plane.y * fov * camera_x;
-
             assert(ray_dir.x != 0.f || ray_dir.y != 0.f);
             ray_dir = Vector2Normalize(ray_dir);
 
@@ -118,35 +116,23 @@ int main() {
             delta_dist.x = std::abs(1.f / ray_dir.x);
             delta_dist.y = std::abs(1.f / ray_dir.y);
 
-            // length of ray from current position to next x or y-side
-            Vector2 side_dist;
-            // what direction to step? in x or y-direction (either +1 or -1)
-            int step_x;
-            int step_y;
+            int hit = 0; // was wall hit?
+            int side; // which side of wall NS or WE
+
+            // calculate what direction to step in x or y-direction (either +1 or -1)
+            int step_x = (ray_dir.x < 0) ? -1 : 1;
+            int step_y = (ray_dir.y < 0) ? -1 : 1;
+
             // current cell we are in
             int map_x = int(player_pos.x);
             int map_y = int(player_pos.y);
 
-            int hit = 0; // was wall hit?
-            int side; // which side of wall NS or WE
-
-            // calculate step and initial side distance
-            if (ray_dir.x < 0) {
-                step_x = -1;
-                side_dist.x = (player_pos.x - map_x) * delta_dist.x;
-            }
-            else {
-                step_x = 1;
-                side_dist.x = (map_x + 1.f - player_pos.x) * delta_dist.x;
-            }
-            if (ray_dir.y < 0) {
-                step_y = -1;
-                side_dist.y = (player_pos.y - map_y) * delta_dist.y;
-            }
-            else {
-                step_y = 1;
-                side_dist.y = (map_y + 1.f - player_pos.y) * delta_dist.y;
-            }
+            // distance from current position to next x or y-side
+            Vector2 side_dist;
+            Vector2 fract = Vector2{ player_pos.x - map_x, player_pos.y - map_y };
+            side_dist.x = ray_dir.x < 0 ? fract.x : 1.f - fract.x;
+            side_dist.y = ray_dir.y < 0 ? fract.y : 1.f - fract.y;
+            side_dist = Vector2Multiply(side_dist, delta_dist);
 
             // perform DDA
             while (hit == 0) {
@@ -166,17 +152,9 @@ int main() {
                 }
             }
 
-            // perpendicular distance from wall to mera plane
-            float ray_len;
-            // calculate distance projected on camera direcion
-            if (side == 0) {
-                ray_len = side_dist.x - delta_dist.x;
-            }
-            else {
-                ray_len = side_dist.y - delta_dist.y;
-            }
+            float ray_len = (side == 0) ? side_dist.x - delta_dist.x : side_dist.y - delta_dist.y;
             Vector2 ray = Vector2Scale(ray_dir, ray_len);
-
+            // perpendicular distance from wall to camera plane
             float perp_wall_dist = Vector2DotProduct(player_dir, ray);
 
             // calculate height of line to render
@@ -193,53 +171,42 @@ int main() {
             }
 
             // render walls
-            if (map[map_y][map_x] != EMPTY) {
-                DrawLine(x, draw_start, x, draw_end, wall_col(map[map_y][map_x], side));
-            }
+            DrawLine(x, draw_start, x, draw_end, wall_col(map[map_y][map_x], side));
+            // render floor
+            DrawLine(x, draw_end, x, scr_height - 1, ColorBrightness(GRAY, -0.55f));
         }
 
-        old_time = cur_time;
-        cur_time = GetTime();
-        //float delta_time = GetFrameTime();
-        double frame_time = (cur_time - old_time);
-
-        double move_speed = frame_time * 5.f;
-        double rot_speed = frame_time * 2.f;
+        double delta_time = GetFrameTime();
+        float move_speed = delta_time * 5.f;
+        float rot_speed = delta_time * 2.f;
         // movement
         if (IsKeyDown(KEY_W)) {
-            if (map[int(player_pos.y)][int(player_pos.x + player_dir.x * move_speed)] == EMPTY) {
-                player_pos.x += player_dir.x * move_speed;
+           Vector2 velocity = Vector2Scale(player_dir, move_speed);
+            if(map[int(player_pos.y)][int(player_pos.x + velocity.x)] == EMPTY) {
+                player_pos.x += velocity.x;
             }
-            if (map[int(player_pos.y + player_dir.y * move_speed)][int(player_pos.x)] == EMPTY) {
-                player_pos.y += player_dir.y * move_speed;
+            if (map[int(player_pos.y + velocity.y)][int(player_pos.x)] == EMPTY) {
+                player_pos.y += velocity.y;
             }
         }
         if (IsKeyDown(KEY_S)) {
-            if (map[int(player_pos.y)][int(player_pos.x - player_dir.x * move_speed)] == EMPTY) {
-                player_pos.x -= player_dir.x * move_speed;
+            Vector2 velocity = Vector2Scale(player_dir, move_speed);
+            if (map[int(player_pos.y)][int(player_pos.x - velocity.x)] == EMPTY) {
+                player_pos.x -= velocity.x;
             }
-            if (map[int(player_pos.y - player_dir.y * move_speed)][int(player_pos.x)] == EMPTY) {
-                player_pos.y -= player_dir.y * move_speed;
+            if (map[int(player_pos.y - velocity.y)][int(player_pos.x)] == EMPTY) {
+                player_pos.y -= velocity.y;
             }
         }
 
         if (IsKeyDown(KEY_A)) {
-            double old_dir_x = player_dir.x;
-            player_dir.x = player_dir.x * cos(rot_speed) - player_dir.y * sin(rot_speed);
-            player_dir.y = old_dir_x * sin(rot_speed) + player_dir.y * cos(rot_speed);
-            double old_plane_x = camera_plane.x;
-            camera_plane.x = camera_plane.x * cos(rot_speed) - camera_plane.y * sin(rot_speed);
-            camera_plane.y = old_plane_x * sin(rot_speed) + camera_plane.y * cos(rot_speed);
+            player_dir = Vector2Rotate(player_dir, rot_speed);
+            camera_plane = Vector2Rotate(camera_plane, rot_speed);
         }
         if (IsKeyDown(KEY_D)) {
-            double old_dir_x = player_dir.x;
-            player_dir.x = player_dir.x * cos(-rot_speed) - player_dir.y * sin(-rot_speed);
-            player_dir.y = old_dir_x * sin(-rot_speed) + player_dir.y * cos(-rot_speed);
-            double old_plane_x = camera_plane.x;
-            camera_plane.x = camera_plane.x * cos(-rot_speed) - camera_plane.y * sin(-rot_speed);
-            camera_plane.y = old_plane_x * sin(-rot_speed) + camera_plane.y * cos(-rot_speed);
+            player_dir = Vector2Rotate(player_dir, -rot_speed);
+            camera_plane = Vector2Rotate(camera_plane, -rot_speed);
         }
-
 
         BeginDrawing();
             ClearBackground(BLACK);

@@ -7,8 +7,8 @@
 #include "rlImGui.h"
 #include "imgui_memory_editor.h"
 
-const int scr_height = 600;
-const int scr_width = 1024;
+const int scr_height = 720;
+const int scr_width = 1280;
 const int map_height = 12;
 const int map_width = 24;
 
@@ -72,13 +72,58 @@ ImU32 im_color[5] = {
 Color w_color[5] = {
     BLANK,
     GRAY,
-    RED,
-    BLUE,
-    GREEN,
+    {201, 27, 27},
+    {27, 27, 201},
+    {27, 201, 27},
 };
 
-Color wall_col(TileType wall, int side) {
-    return (side == 0) ? w_color[wall] : ColorBrightness(w_color[wall], -0.25f);
+struct linear_color {
+    float r;
+    float g;
+    float b;
+};
+
+linear_color sun = { 2.f, 2.f, 2.f };
+Color SKY = { 190, 230, 245, 255 }; // color for ClearBackground() too
+
+linear_color srgb_to_lin(Color col) {
+    float r = float(col.r) / 255.f;
+    float g = float(col.g) / 255.f;
+    float b = float(col.b) / 255.f;
+    linear_color l_col;
+    l_col.r = (r < 0.04045f) ? r * 0.0773993808f : pow(r * 0.9478672986f + 0.0521327014f, 2.4f);
+    l_col.g = (g < 0.04045f) ? g * 0.0773993808f : pow(g * 0.9478672986f + 0.0521327014f, 2.4f);
+    l_col.b = (b < 0.04045f) ? b * 0.0773993808f : pow(b * 0.9478672986f + 0.0521327014f, 2.4f);
+    return l_col;
+}
+
+Color lin_to_srgb(linear_color col) {
+    Color srgb;
+    col.r = col.r / (col.r + 1.f);
+    col.g = col.g / (col.g + 1.f);
+    col.b = col.b / (col.b + 1.f);
+    float r = (col.r < 0.0031308f) ? col.r * 12.92f : 1.055f * pow(col.r, 0.41666f) - 0.055f;
+    float g = (col.g < 0.0031308f) ? col.g * 12.92f : 1.055f * pow(col.g, 0.41666f) - 0.055f;
+    float b = (col.b < 0.0031308f) ? col.b * 12.92f : 1.055f * pow(col.b, 0.41666f) - 0.055f;
+    srgb.r = (r >= 1.f) ? 255 : int(r * 255.f);
+    srgb.g = (g >= 1.f) ? 255 : int(g * 255.f);
+    srgb.b = (b >= 1.f) ? 255 : int(b * 255.f);
+    srgb.a = 255;
+    return srgb;
+}
+
+Color get_lighting(Color wall, int side) {
+    // albedo * sun * sun_influence + albedo * sky * sky_influence
+    float sun_influence = (side == 0) ? 1.f : 0.5f;
+    float sky_influence = 0.1f;
+    linear_color sky = srgb_to_lin(SKY);
+    linear_color wall_albedo = srgb_to_lin(wall);
+    linear_color l_lighting;
+    l_lighting.r = wall_albedo.r * sun.r * sun_influence + wall_albedo.r * sky.r * sky_influence;
+    l_lighting.g = wall_albedo.g * sun.g * sun_influence + wall_albedo.g * sky.g * sky_influence;
+    l_lighting.b = wall_albedo.b * sun.b * sun_influence + wall_albedo.b * sky.b * sky_influence;
+    Color srgb_lighting = lin_to_srgb(l_lighting);
+    return srgb_lighting;
 }
 
 int main() {
@@ -96,7 +141,7 @@ int main() {
     while (!WindowShouldClose()) {
 
         // raycasting loop
-        for (int x = 0; x < scr_width; x++) {
+        for (int x = 0; x <= scr_width; x++) {
             float camera_x = 2 * x / float(scr_width) - 1; // x-coordinate in camera space (value from -1 to 1)
             player_dir = Vector2Normalize(player_dir);
             camera_plane = Vector2Normalize(camera_plane);
@@ -171,9 +216,9 @@ int main() {
             }
 
             // render walls
-            DrawLine(x, draw_start, x, draw_end, wall_col(map[map_y][map_x], side));
+            DrawLine(x, draw_start, x, draw_end, get_lighting(w_color[map[map_y][map_x]], side));
             // render floor
-            DrawLine(x, draw_end, x, scr_height - 1, ColorBrightness(GRAY, -0.55f));
+            DrawLine(x, draw_end, x, scr_height, get_lighting({ 100,100,100,255 }, 1));
         }
 
         double delta_time = GetFrameTime();
@@ -209,28 +254,29 @@ int main() {
         }
 
         BeginDrawing();
-            ClearBackground(BLACK);
+            ClearBackground(SKY);
             rlImGuiBegin();
                 bool open = true;
                 ImGui::ShowDemoWindow(&open);
                 ImGui::Begin("My_window");
+                ImGui::SliderFloat3("sun", (float*)&sun, 0.f, 10.f);
 
-                    ImDrawList* draw_list = ImGui::GetWindowDrawList();
-                    const ImVec2 p = ImGui::GetCursorScreenPos();
-                    float x = p.x + 4.0f;
-                    float y = p.y + 4.0f;
-                    static float sz = 12.0f;
-                    const float spacing = 2.0f;
+                ImDrawList* draw_list = ImGui::GetWindowDrawList();
+                const ImVec2 p = ImGui::GetCursorScreenPos();
+                float x = p.x + 4.0f;
+                float y = p.y + 4.0f;
+                static float sz = 12.0f;
+                const float spacing = 2.0f;
 
-                    // Draw 2d map imgui
-                    for (int h = 0; h < map_height; h++) {
-                        for (int w = 0; w < map_width; w++) {
-                            draw_list->AddRectFilled(ImVec2(x, y), ImVec2(x + sz, y + sz), im_color[map[h][w]]);
-                            x += sz + spacing;
-                        }
-                        x = p.x + 4.0f;
-                        y += sz + spacing;
+                // Draw 2d map imgui
+                for (int h = 0; h < map_height; h++) {
+                    for (int w = 0; w < map_width; w++) {
+                        draw_list->AddRectFilled(ImVec2(x, y), ImVec2(x + sz, y + sz), im_color[map[h][w]]);
+                        x += sz + spacing;
                     }
+                    x = p.x + 4.0f;
+                    y += sz + spacing;
+                }
 
                 ImGui::End();
             rlImGuiEnd();

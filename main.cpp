@@ -5,25 +5,26 @@
 #include <cassert>
 #include "imgui.h"
 #include "rlImGui.h"
+#include <vector>
 #include "imgui_memory_editor.h"
 
 const int scr_height = 720;
 const int scr_width = 1280;
-const int map_height = 12;
-const int map_width = 24;
+int map_height = 12;
+int map_width = 24;
 int tile_size = 16;
 
-bool map_editor = false; 
+bool map_editor = false;
 
 enum TileType {
     EMPTY,
     GRAY_WALL,
     RED_WALL,
-    BLUE_WALL,
     GREEN_WALL,
+    BLUE_WALL,
 };
 
-TileType map[map_height][map_width];
+TileType draw_color;
 
 std::string map_definition = {
     "########################"
@@ -40,44 +41,51 @@ std::string map_definition = {
     "########################"
 };
 
+std::vector<TileType> map;
+
+int tile_id(int x, int y) {
+    return (y * map_width + x);
+}
+
 void parse_map(std::string str) {
-    for (int y = 0; y < map_height; y++) {
+    for (int y = 0; y < map_height; y++) {  
         for (int x = 0; x < map_width; x++) {
             int idx = y * map_width + x;
             assert(idx <= map_width * map_height);
             if (str[idx] == '.') {
-                map[y][x] = EMPTY;
+                map.push_back(EMPTY);
             }
             else if (str[idx] == '#') {
-                map[y][x] = GRAY_WALL;
+                map.push_back(GRAY_WALL);
             }
             else if (str[idx] == 'B') {
-                map[y][x] = BLUE_WALL;
+                map.push_back(BLUE_WALL);
             }
             else if (str[idx] == 'R') {
-                map[y][x] = RED_WALL;
+                map.push_back(RED_WALL);
             }
             else if (str[idx] == 'G') {
-                map[y][x] = GREEN_WALL;
+                map.push_back(GREEN_WALL);
             }
         }
     }
 }
 
+
 ImU32 im_color[5] = {
     IM_COL32(5, 5, 5, 255), // black
     IM_COL32(100, 100, 100, 255), // gray
     IM_COL32(180, 0, 0, 255), // red
-    IM_COL32(0, 0, 180, 255), // blue
     IM_COL32(0, 180, 0, 255), // green
+    IM_COL32(0, 0, 180, 255), // blue
 };
 
 Color w_color[5] = {
     BLANK,
     GRAY,
     {201, 27, 27},
-    {27, 27, 201},
     {27, 201, 27},
+    {27, 27, 201},
 };
 
 struct linear_color {
@@ -137,7 +145,36 @@ Vector2 convert_to_px(Vector2 v) {
 	return { v_px.x + w , v_px.y + h };
 }
 
-void edit_map() {
+void rebuild_map(int old_width, int old_height) {
+    // save old map tiles
+    std::vector<TileType> map_copy;
+    for (int i = 0; i < map.size(); i++) {
+        map_copy.push_back(map[i]);
+    }
+    // rebuild map with new size:
+    // interior = EMPTY, borders = GRAY_WALL
+    map.clear();
+    for (int y = 0; y < map_height; y++) {
+        for (int x = 0; x < map_width; x++) {
+            if (y > 0 && y < map_height - 1 && x > 0 && x < map_width - 1) {
+                map.push_back(EMPTY);
+            }
+            else {
+                map.push_back(GRAY_WALL);
+            }
+        }
+    }
+    // restore old tiles into new map
+    // do not overwrite borders or EMPTY cells
+    for (int y = 0; y < old_height; y++) {
+        for (int x = 0; x < old_width; x++) {
+            if (map_copy[y * old_width + x] != EMPTY && map_copy[y * old_width + x] != GRAY_WALL) {
+                if (map[y * map_width + x] == EMPTY) {
+                    map[y * map_width + x] = map_copy[y * old_width + x];
+                }
+            }
+        }
+    }
 }
 
 int main() {
@@ -162,31 +199,46 @@ int main() {
                 for (int x = 0; x < map_width; x++) {
                     Vector2 pos = { x, y };
                     Vector2 tile_sz = { tile_size, tile_size };
-                    if (map[y][x] == EMPTY) {
+                    if (map[tile_id(x, y)] == EMPTY) {
                         DrawRectangleV(convert_to_px(pos), tile_sz, { 40, 40, 40, 255 });
                     }
-                    else if (map[y][x] == GRAY_WALL) {
+                    else if (map[tile_id(x, y)] == GRAY_WALL) {
                         DrawRectangleV(convert_to_px(pos), tile_sz, GRAY);
                     }
-                    else if (map[y][x] == BLUE_WALL) {
+                    else if (map[tile_id(x, y)] == BLUE_WALL) {
                         DrawRectangleV(convert_to_px(pos), tile_sz, BLUE);
                     }
-                    else if (map[y][x] == RED_WALL) {
+                    else if (map[tile_id(x, y)] == RED_WALL) {
                         DrawRectangleV(convert_to_px(pos), tile_sz, RED);
                     }
-                    else if (map[y][x] == GREEN_WALL) {
+                    else if (map[tile_id(x, y)] == GREEN_WALL) {
                         DrawRectangleV(convert_to_px(pos), tile_sz, GREEN);
                     }
                 }
             }
-            if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+            if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
                 float w = scr_width/2 - map_width/2 * tile_size;
                 float h = scr_height/2 - map_height/2 * tile_size;
                 Vector2 mouse_px = GetMousePosition();
                 mouse_px = { mouse_px.x - w, mouse_px.y - h };
-                // Convert mose position from pixels to tiles
+                // Convert mouse position from pixels to tiles
                 Vector2 mouse_tile = { floor(mouse_px.x / tile_size), floor(mouse_px.y / tile_size) };
-                map[int(mouse_tile.y)][int(mouse_tile.x)] = GRAY_WALL;
+                if (int(mouse_tile.x) > 0 && int(mouse_tile.x) < map_width && int(mouse_tile.y) > 0 && int(mouse_tile.y) < map_height) {
+                    map[tile_id(int(mouse_tile.x), int(mouse_tile.y))] = draw_color;
+                }
+            }
+            if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+                float w = scr_width/2 - map_width/2 * tile_size;
+                float h = scr_height/2 - map_height/2 * tile_size;
+                Vector2 mouse_px = GetMousePosition();
+                mouse_px = { mouse_px.x - w, mouse_px.y - h };
+
+                Vector2 mouse_tile = { floor(mouse_px.x / tile_size), floor(mouse_px.y / tile_size) };
+                if (int(mouse_tile.x) > 0 && int(mouse_tile.x) < map_width && int(mouse_tile.y) > 0 && int(mouse_tile.y) < map_height) {
+                    if (map[tile_id((int(mouse_tile.x)),(int(mouse_tile.y)))] != EMPTY) {
+                        map[tile_id((int(mouse_tile.x)),(int(mouse_tile.y)))] = EMPTY;
+                    }
+                }
             }
         }
         else {
@@ -242,7 +294,7 @@ int main() {
                         side = 1;
                     }
                     // check if ray has hit a wall
-                    if (map[map_y][map_x] != EMPTY) {
+                    if (map[tile_id(map_x, map_y)] != EMPTY) {
                         hit = 1;
                     }
                 }
@@ -266,7 +318,7 @@ int main() {
                 }
 
                 // render walls
-                DrawLine(x, draw_start, x, draw_end, get_lighting(w_color[map[map_y][map_x]], side));
+                DrawLine(x, draw_start, x, draw_end, get_lighting(w_color[map[tile_id(map_x, map_y)]], side));
                 // render floor
                 DrawLine(x, draw_end, x, scr_height, get_lighting({ 100, 100, 100, 255 }, 1));
                 // render sky
@@ -279,23 +331,23 @@ int main() {
             // movement
             if (IsKeyDown(KEY_W)) {
                 Vector2 velocity = Vector2Scale(player_dir, move_speed);
-                if (map[int(player_pos.y)][int(player_pos.x + velocity.x)] == EMPTY) {
+                if (map[tile_id(int(player_pos.x + velocity.x), int(player_pos.y))] == EMPTY) {
                     player_pos.x += velocity.x;
                 }
-                if (map[int(player_pos.y + velocity.y)][int(player_pos.x)] == EMPTY) {
+                if (map[tile_id(int(player_pos.x), int(player_pos.y + velocity.y))] == EMPTY) {
                     player_pos.y += velocity.y;
                 }
             }
             if (IsKeyDown(KEY_S)) {
                 Vector2 velocity = Vector2Scale(player_dir, move_speed);
-                if (map[int(player_pos.y)][int(player_pos.x - velocity.x)] == EMPTY) {
+                if (map[tile_id(int(player_pos.x - velocity.x), int(player_pos.y))] == EMPTY) {
                     player_pos.x -= velocity.x;
                 }
-                if (map[int(player_pos.y - velocity.y)][int(player_pos.x)] == EMPTY) {
+                if (map[tile_id(int(player_pos.x), int(player_pos.y - velocity.y))] == EMPTY) {
                     player_pos.y -= velocity.y;
                 }
             }
-
+            // rotation
             if (IsKeyDown(KEY_A)) {
                 player_dir = Vector2Rotate(player_dir, rot_speed);
                 camera_plane = Vector2Rotate(camera_plane, rot_speed);
@@ -306,6 +358,8 @@ int main() {
             }
         }
 
+        int map_width_old = map_width;
+        int map_height_old = map_height;
         BeginDrawing();
             ClearBackground(BLACK);
             rlImGuiBegin();
@@ -313,6 +367,40 @@ int main() {
                 ImGui::ShowDemoWindow(&open);
                 ImGui::Begin("My_window");
                 ImGui::SliderFloat3("sun", (float*)&sun, 0.f, 10.f);
+
+                if (ImGui::InputInt("map_width", &map_width)) {
+                    rebuild_map(map_width_old, map_height_old);
+                }
+                if (ImGui::InputInt("map_height", &map_height)) {
+                    rebuild_map(map_width_old, map_height_old);
+                }
+
+                int max_color = 3;
+
+                for (int i = 0; i < max_color; i++) {
+                    if (i > 0) {
+                        ImGui::SameLine();
+                    }
+                    if (i == 0) {
+                        ImGui::PushStyleColor(ImGuiCol_Button, im_color[2]);
+                        if (ImGui::Button("red") && map_editor) {
+                            draw_color = RED_WALL;
+                        }
+                    }
+                    if (i == 1) {
+                        ImGui::PushStyleColor(ImGuiCol_Button, im_color[3]);
+                        if (ImGui::Button("green")) {
+                            draw_color = GREEN_WALL;
+                        }
+                    }
+                    if (i == 2) {
+                        ImGui::PushStyleColor(ImGuiCol_Button, im_color[4]);
+                        if (ImGui::Button("blue")) {
+                            draw_color = BLUE_WALL;
+                        }
+                    }
+                    ImGui::PopStyleColor(1);
+                }
 
                 ImDrawList* draw_list = ImGui::GetWindowDrawList();
                 const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -324,7 +412,7 @@ int main() {
                 // Draw 2d map imgui
                 for (int h = 0; h < map_height; h++) {
                     for (int w = 0; w < map_width; w++) {
-                        draw_list->AddRectFilled(ImVec2(x, y), ImVec2(x + sz, y + sz), im_color[map[h][w]]);
+                        draw_list->AddRectFilled(ImVec2(x, y), ImVec2(x + sz, y + sz), im_color[map[tile_id(w,h)]]);
                         x += sz + spacing;
                     }
                     x = p.x + 4.0f;

@@ -7,13 +7,13 @@
 #include "rlImGui.h"
 #include <vector>
 #include "imgui_memory_editor.h"
+#include "lighting.hpp"
 
 const int scr_height = 720;
 const int scr_width = 1280;
 int map_height = 12;
 int map_width = 24;
 int tile_size = 16;
-
 bool map_editor = false;
 
 enum TileType {
@@ -71,78 +71,41 @@ void parse_map(std::string str) {
     }
 }
 
-
 ImU32 im_color[5] = {
-    IM_COL32(5, 5, 5, 255), // black
-    IM_COL32(100, 100, 100, 255), // gray
-    IM_COL32(180, 0, 0, 255), // red
-    IM_COL32(0, 180, 0, 255), // green
-    IM_COL32(0, 0, 180, 255), // blue
+    IM_COL32(5, 5, 5, 255),
+    IM_COL32(100, 100, 100, 255),
+    IM_COL32(180, 0, 0, 255),
+    IM_COL32(0, 180, 0, 255),
+    IM_COL32(0, 0, 180, 255),
 };
 
-Color w_color[5] = {
+Color tile_color[5] = {
     BLANK,
     GRAY,
-    {201, 27, 27},
-    {27, 201, 27},
-    {27, 27, 201},
+    {201, 27, 27, 255},
+    {27, 201, 27, 255},
+    {27, 27, 201, 255},
 };
 
-struct linear_color {
-    float r;
-    float g;
-    float b;
-};
+linear_color sun = { 2.5f, 2.5f, 2.5f };
+Color sky_srgb = { 190, 230, 245, 255 };
 
-linear_color sun = { 2.f, 2.f, 2.f };
-Color SKY = { 190, 230, 245, 255 }; // color for ClearBackground() too
-
-linear_color srgb_to_lin(Color col) {
-    float r = float(col.r) / 255.f;
-    float g = float(col.g) / 255.f;
-    float b = float(col.b) / 255.f;
-    linear_color l_col;
-    l_col.r = (r < 0.04045f) ? r * 0.0773993808f : pow(r * 0.9478672986f + 0.0521327014f, 2.4f);
-    l_col.g = (g < 0.04045f) ? g * 0.0773993808f : pow(g * 0.9478672986f + 0.0521327014f, 2.4f);
-    l_col.b = (b < 0.04045f) ? b * 0.0773993808f : pow(b * 0.9478672986f + 0.0521327014f, 2.4f);
-    return l_col;
+Vector2 tile_to_screen(Vector2 pos) {
+    float w = (scr_width - map_width * tile_size) * 0.5f;
+    float h = (scr_height - map_height * tile_size) * 0.5f;
+    pos = Vector2Scale(pos, tile_size);
+	return { pos.x + w , pos.y + h };
 }
 
-Color lin_to_srgb(linear_color col) {
-    Color srgb;
-    col.r = col.r / (col.r + 1.f);
-    col.g = col.g / (col.g + 1.f);
-    col.b = col.b / (col.b + 1.f);
-    float r = (col.r < 0.0031308f) ? col.r * 12.92f : 1.055f * pow(col.r, 0.41666f) - 0.055f;
-    float g = (col.g < 0.0031308f) ? col.g * 12.92f : 1.055f * pow(col.g, 0.41666f) - 0.055f;
-    float b = (col.b < 0.0031308f) ? col.b * 12.92f : 1.055f * pow(col.b, 0.41666f) - 0.055f;
-    srgb.r = (r >= 1.f) ? 255 : int(r * 255.f);
-    srgb.g = (g >= 1.f) ? 255 : int(g * 255.f);
-    srgb.b = (b >= 1.f) ? 255 : int(b * 255.f);
-    srgb.a = 255;
-    return srgb;
+Vector2 screen_to_tile(Vector2 pos) {
+    float w = (scr_width - map_width * tile_size) * 0.5f;
+    float h = (scr_height - map_height * tile_size) * 0.5f;
+    pos = { pos.x - w, pos.y - h };
+    return { floor(pos.x / tile_size), floor(pos.y / tile_size) };
 }
 
-Color get_lighting(Color wall, int side) {
-    // albedo * sun * sun_influence + albedo * sky * sky_influence
-    float sun_influence = (side == 0) ? 1.f : 0.5f;
-    float sky_influence = 0.1f;
-    linear_color sky = srgb_to_lin(SKY);
-    linear_color wall_albedo = srgb_to_lin(wall);
-    linear_color l_lighting;
-    l_lighting.r = wall_albedo.r * sun.r * sun_influence + wall_albedo.r * sky.r * sky_influence;
-    l_lighting.g = wall_albedo.g * sun.g * sun_influence + wall_albedo.g * sky.g * sky_influence;
-    l_lighting.b = wall_albedo.b * sun.b * sun_influence + wall_albedo.b * sky.b * sky_influence;
-    Color srgb_lighting = lin_to_srgb(l_lighting);
-    return srgb_lighting;
-}
-
-Vector2 convert_to_px(Vector2 v) {
-	Vector2 v_px = { v.x * tile_size, v.y * tile_size };
-	//centerize
-	float w = scr_width/2 - map_width/2 * tile_size;
-	float h = scr_height/2 - map_height/2 * tile_size;
-	return { v_px.x + w , v_px.y + h };
+bool in_bounds(Vector2 v) {
+    return (v.y > 0 && v.y < map_height - 1 && v.x > 0 && v.x < map_width - 1);
 }
 
 void rebuild_map(int old_width, int old_height) {
@@ -156,7 +119,7 @@ void rebuild_map(int old_width, int old_height) {
     map.clear();
     for (int y = 0; y < map_height; y++) {
         for (int x = 0; x < map_width; x++) {
-            if (y > 0 && y < map_height - 1 && x > 0 && x < map_width - 1) {
+            if (in_bounds(Vector2(x, y))) {
                 map.push_back(EMPTY);
             }
             else {
@@ -199,44 +162,21 @@ int main() {
                 for (int x = 0; x < map_width; x++) {
                     Vector2 pos = { x, y };
                     Vector2 tile_sz = { tile_size, tile_size };
-                    if (map[tile_id(x, y)] == EMPTY) {
-                        DrawRectangleV(convert_to_px(pos), tile_sz, { 40, 40, 40, 255 });
-                    }
-                    else if (map[tile_id(x, y)] == GRAY_WALL) {
-                        DrawRectangleV(convert_to_px(pos), tile_sz, GRAY);
-                    }
-                    else if (map[tile_id(x, y)] == BLUE_WALL) {
-                        DrawRectangleV(convert_to_px(pos), tile_sz, BLUE);
-                    }
-                    else if (map[tile_id(x, y)] == RED_WALL) {
-                        DrawRectangleV(convert_to_px(pos), tile_sz, RED);
-                    }
-                    else if (map[tile_id(x, y)] == GREEN_WALL) {
-                        DrawRectangleV(convert_to_px(pos), tile_sz, GREEN);
-                    }
+                    TileType tile = map[tile_id(x, y)];
+                    DrawRectangleV(tile_to_screen(pos), tile_sz, tile_color[tile]);
                 }
             }
             if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
-                float w = scr_width/2 - map_width/2 * tile_size;
-                float h = scr_height/2 - map_height/2 * tile_size;
-                Vector2 mouse_px = GetMousePosition();
-                mouse_px = { mouse_px.x - w, mouse_px.y - h };
-                // Convert mouse position from pixels to tiles
-                Vector2 mouse_tile = { floor(mouse_px.x / tile_size), floor(mouse_px.y / tile_size) };
-                if (int(mouse_tile.x) > 0 && int(mouse_tile.x) < map_width && int(mouse_tile.y) > 0 && int(mouse_tile.y) < map_height) {
-                    map[tile_id(int(mouse_tile.x), int(mouse_tile.y))] = draw_color;
+                Vector2 mpos_tile = screen_to_tile(GetMousePosition());
+                if (in_bounds(mpos_tile)) {
+                    map[tile_id(int(mpos_tile.x), int(mpos_tile.y))] = draw_color;
                 }
             }
             if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
-                float w = scr_width/2 - map_width/2 * tile_size;
-                float h = scr_height/2 - map_height/2 * tile_size;
-                Vector2 mouse_px = GetMousePosition();
-                mouse_px = { mouse_px.x - w, mouse_px.y - h };
-
-                Vector2 mouse_tile = { floor(mouse_px.x / tile_size), floor(mouse_px.y / tile_size) };
-                if (int(mouse_tile.x) > 0 && int(mouse_tile.x) < map_width && int(mouse_tile.y) > 0 && int(mouse_tile.y) < map_height) {
-                    if (map[tile_id((int(mouse_tile.x)),(int(mouse_tile.y)))] != EMPTY) {
-                        map[tile_id((int(mouse_tile.x)),(int(mouse_tile.y)))] = EMPTY;
+                Vector2 mpos_tile = screen_to_tile(GetMousePosition());
+                if (in_bounds(mpos_tile)) {
+                    if (map[tile_id((int(mpos_tile.x)),(int(mpos_tile.y)))] != EMPTY) {
+                        map[tile_id((int(mpos_tile.x)),(int(mpos_tile.y)))] = EMPTY;
                     }
                 }
             }
@@ -317,12 +257,10 @@ int main() {
                     draw_end = scr_height - 1;
                 }
 
-                // render walls
-                DrawLine(x, draw_start, x, draw_end, get_lighting(w_color[map[tile_id(map_x, map_y)]], side));
-                // render floor
-                DrawLine(x, draw_end, x, scr_height, get_lighting({ 100, 100, 100, 255 }, 1));
-                // render sky
-                DrawLine(x, 0, x, draw_start, SKY);
+                // render walls, floor, sky
+                DrawLine(x, draw_start, x, draw_end, get_lighting(tile_color[map[tile_id(map_x, map_y)]], side, sun, sky_srgb));
+                DrawLine(x, draw_end, x, scr_height, get_lighting({ 100, 100, 100, 255 }, 1, sun, sky_srgb));
+                DrawLine(x, 0, x, draw_start, sky_srgb);
             }
 
             double delta_time = GetFrameTime();
@@ -376,7 +314,6 @@ int main() {
                 }
 
                 int max_color = 3;
-
                 for (int i = 0; i < max_color; i++) {
                     if (i > 0) {
                         ImGui::SameLine();

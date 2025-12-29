@@ -28,16 +28,16 @@ TileType draw_color;
 
 std::string map_definition = {
     "########################"
+    "#.............GB.......#"
+    "#..BR.RB...............#"
+    "#..R...R...............#"
+    "#..B.G.B...............#"
+    "#..RBRBR...............#"
     "#......................#"
-    "#..BBB.................#"
-    "#..B.B.................#"
-    "#..B.B........RRR......#"
-    "#..BBB........R.R......#"
-    "#.............RRR......#"
-    "#....RRR...............#"
-    "#....R.R...............#"
-    "#....RRR..GG..GGGGGG...#"
-    "#.........GG..GGGGGG...#"
+    "#......................#"
+    "#......................#"
+    "#......G...............#"
+    "#.............GG.......#"
     "########################"
 };
 
@@ -88,7 +88,7 @@ Color tile_color[5] = {
 };
 
 linear_color sun = { 2.5f, 2.5f, 2.5f };
-Color sky_srgb = { 190, 230, 245, 255 };
+Color sky_srgb = { 81, 98, 129, 255 };
 
 Vector2 tile_to_screen(Vector2 pos) {
     float w = (scr_width - map_width * tile_size) * 0.5f;
@@ -150,6 +150,36 @@ int main() {
     Vector2 camera_plane = { 0.f, 0.66f }; // is always perpendicular on the player direction
     Vector2 ray_dir = { 0.f, 0.f };
 
+    // textures
+    Image textures[5];
+    for (int i = 0; i < 5; i++) {
+        switch (i) {
+        case 0:
+            textures[i] = LoadImage("greystone.png");
+            break;
+        case 1:
+            textures[i] = LoadImage("mossy.png");
+            break;
+        case 2:
+            textures[i] = LoadImage("redbrick.png");
+            break;
+        case 3:
+            textures[i] = LoadImage("wood.png");
+            break;
+        case 4:
+            textures[i] = LoadImage("eagle.png");
+            break;
+        default:
+            break;
+        }
+        ImageFormat(&textures[i], PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    }
+
+    Image screen_im = GenImageColor(scr_width, scr_height, BLACK);
+    ImageFormat(&screen_im, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+
+    Texture2D screen_tex = LoadTextureFromImage(screen_im);
+
     SetTargetFPS(60);
     rlImGuiSetup(true);
     while (!WindowShouldClose()) {
@@ -183,13 +213,13 @@ int main() {
         }
         else {
             // raycasting loop
-            for (int x = 0; x <= scr_width; x++) {
+            for (int x = 0; x < scr_width; x++) {
                 float camera_x = 2 * x / float(scr_width) - 1; // x-coordinate in camera space (value from -1 to 1)
                 player_dir = Vector2Normalize(player_dir);
                 camera_plane = Vector2Normalize(camera_plane);
 
                 // half length of camera_plane from given angle
-                float fov = std::tan(DEG2RAD * (66.f / 2.f));
+                float fov = std::tan(DEG2RAD * (56.f / 2.f));
 
                 // calculate ray direction
                 ray_dir.x = player_dir.x + camera_plane.x * fov * camera_x;
@@ -240,12 +270,15 @@ int main() {
                 }
 
                 float ray_len = (side == 0) ? side_dist.x - delta_dist.x : side_dist.y - delta_dist.y;
+                if (ray_len == 0) {
+                    continue;
+                }
                 Vector2 ray = Vector2Scale(ray_dir, ray_len);
                 // perpendicular distance from wall to camera plane
                 float perp_wall_dist = Vector2DotProduct(player_dir, ray);
 
                 // calculate height of line to render
-                int line_height = int(scr_height / perp_wall_dist);
+                int line_height = int(scr_height / perp_wall_dist / fov);
 
                 // calculate the lowest and highest pixel to fill in current stripe
                 int draw_start = -line_height / 2 + scr_height / 2;
@@ -257,11 +290,60 @@ int main() {
                     draw_end = scr_height - 1;
                 }
 
-                // render walls, floor, sky
-                DrawLine(x, draw_start, x, draw_end, get_lighting(tile_color[map[tile_id(map_x, map_y)]], side, sun, sky_srgb));
-                DrawLine(x, draw_end, x, scr_height, get_lighting({ 100, 100, 100, 255 }, 1, sun, sky_srgb));
-                DrawLine(x, 0, x, draw_start, sky_srgb);
+                int tex_id;
+                switch (map[tile_id(map_x, map_y)]) {
+                case GRAY_WALL:
+                    tex_id = 0; // greystone
+                    break;
+                case RED_WALL:
+                    tex_id = 2; // redbrick
+                    break;
+                case GREEN_WALL:
+                    tex_id = 1; // mossy
+                    break;
+                case BLUE_WALL:
+                    tex_id = 4; // eagle
+                    break;
+                default:
+                    break;
+                }
+
+                // where exactly the wall was hit (side of tile)
+                float wall_x;
+                if (side == 0) { // x (vertical side |)
+                    wall_x = player_pos.y + perp_wall_dist * ray_dir.y;
+                }
+                else { // y (horizontal side --)
+                    wall_x = player_pos.x + perp_wall_dist * ray_dir.x;
+                }
+                wall_x -= floor(wall_x);
+
+                // find x coordinate of the texture from wall_x
+                int tex_x = int(wall_x * float(textures->width));
+                if (side == 0 && ray_dir.x > 0) {
+                    tex_x = textures->width - tex_x - 1;
+                }
+                if (side == 1 && ray_dir.y < 0) {
+                    tex_x = textures->width - tex_x - 1;
+                }
+
+                // How much to increase the texture coordinate per screen pixel
+                float step = 1.0 * textures->height / line_height;
+                // Starting texture coordinate
+                float tex_pos = (float(draw_start) - float(scr_height)/2.f + float(line_height)/2.f) * step;
+                for (int y = draw_start; y < draw_end; y++) {
+                    // Cast the texture coordinate to integer, and mask with (textures->height - 1) in case of overflow
+                    int tex_y = (int)tex_pos & (textures->height - 1);
+                    tex_pos += step;
+                    ImageDrawPixel(&screen_im, x, y, GetImageColor(textures[tex_id], tex_x, tex_y));
+                }
+                DrawPixel(x, 250, RED);
+                ImageDrawLine(&screen_im, x, 0, x, draw_start, sky_srgb);
+                ImageDrawLine(&screen_im, x, draw_end, x, scr_height, {100, 100, 100, 255});
             }
+            UpdateTexture(screen_tex, screen_im.data);
+            DrawTexture(screen_tex, 0, 0, WHITE);
+            ImageClearBackground(&screen_im, BLACK);
 
             double delta_time = GetFrameTime();
             float move_speed = delta_time * 5.f;

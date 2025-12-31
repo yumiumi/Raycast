@@ -88,7 +88,7 @@ Color tile_color[5] = {
 };
 
 linear_color sun = { 2.5f, 2.5f, 2.5f };
-Color sky_srgb = { 81, 98, 129, 255 };
+Color sky_srgb = { 71, 88, 119, 255 };
 
 Vector2 tile_to_screen(Vector2 pos) {
     float w = (scr_width - map_width * tile_size) * 0.5f;
@@ -311,33 +311,29 @@ int main() {
                 // where exactly the wall was hit (side of tile)
                 float wall_x;
                 if (side == 0) { // x (vertical side |)
-                    wall_x = player_pos.y + perp_wall_dist * ray_dir.y;
+                    Vector2 v2_wall_x = Vector2Add(player_pos, ray);
+                    wall_x = v2_wall_x.y;
                 }
                 else { // y (horizontal side --)
-                    wall_x = player_pos.x + perp_wall_dist * ray_dir.x;
+                    Vector2 v2_wall_x = Vector2Add(player_pos, ray);
+                    wall_x = v2_wall_x.x;
                 }
                 wall_x -= floor(wall_x);
 
-                // find x coordinate of the texture from wall_x
+                // find x pixel of the texture from wall_x
                 int tex_x = int(wall_x * float(textures->width));
-                if (side == 0 && ray_dir.x > 0) {
-                    tex_x = textures->width - tex_x - 1;
-                }
-                if (side == 1 && ray_dir.y < 0) {
-                    tex_x = textures->width - tex_x - 1;
-                }
 
-                // How much to increase the texture coordinate per screen pixel
-                float step = 1.0 * textures->height / line_height;
+                // How much texels per screen pixel
+                float step = float(textures->height) / float(line_height);
+
                 // Starting texture coordinate
-                float tex_pos = (float(draw_start) - float(scr_height)/2.f + float(line_height)/2.f) * step;
+                float tex_pos = (float(draw_start) - scr_height/2.f + line_height/2.f) * step;
+
                 for (int y = draw_start; y < draw_end; y++) {
-                    // Cast the texture coordinate to integer, and mask with (textures->height - 1) in case of overflow
-                    int tex_y = (int)tex_pos & (textures->height - 1);
+                    int tex_y = int(tex_pos);
                     tex_pos += step;
                     ImageDrawPixel(&screen_im, x, y, GetImageColor(textures[tex_id], tex_x, tex_y));
                 }
-                DrawPixel(x, 250, RED);
                 ImageDrawLine(&screen_im, x, 0, x, draw_start, sky_srgb);
                 ImageDrawLine(&screen_im, x, draw_end, x, scr_height, {100, 100, 100, 255});
             }
@@ -347,7 +343,7 @@ int main() {
 
             double delta_time = GetFrameTime();
             float move_speed = delta_time * 5.f;
-            float rot_speed = delta_time * 2.f;
+            float rot_speed = delta_time;
             // movement
             if (IsKeyDown(KEY_W)) {
                 Vector2 velocity = Vector2Scale(player_dir, move_speed);

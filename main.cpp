@@ -15,6 +15,7 @@ int map_height = 12;
 int map_width = 24;
 int tile_size = 16;
 bool map_editor = false;
+std::vector <Image> tex_mips;
 
 enum TileType {
     EMPTY,
@@ -140,45 +141,66 @@ void rebuild_map(int old_width, int old_height) {
     }
 }
 
+float get_mip_level(float pixels_per_texture) {
+    // level is the level where there will be 1 texel per pixel
+    float level = -log2(pixels_per_texture / 64.f);
+    if (level > 6.f) {
+        return 6.f;
+    }
+    if (level < 0.f) {
+        return 0.f;
+    }
+    return level;
+}
+
+Color image_px_color(int mip_level, int tex_id, int tex_x, int tex_y) {
+    int id = tex_id * 7 + mip_level;
+    int pos_x = tex_x / pow(2, mip_level);
+    int pos_y = tex_y / pow(2, mip_level);
+    Color mip;
+    uint8_t* bytes = (uint8_t*)tex_mips[id].data;
+    mip.r = bytes[4 * (pos_x + pos_y * tex_mips[id].width) + 0];
+    mip.g = bytes[4 * (pos_x + pos_y * tex_mips[id].width) + 1];
+    mip.b = bytes[4 * (pos_x + pos_y * tex_mips[id].width) + 2];
+    return mip;
+}
+
 int main() {
     InitWindow(scr_width, scr_height, "Raycast");
 
     parse_map(map_definition);
 
-    Vector2 player_pos = { 20.0f, 3.0f };
-    Vector2 player_dir = { -1.f, 0.f };
-    Vector2 camera_plane = { 0.f, 0.66f }; // is always perpendicular on the player direction
-    Vector2 ray_dir = { 0.f, 0.f };
-
     // textures
-    Image textures[5];
-    for (int i = 0; i < 5; i++) {
-        switch (i) {
-        case 0:
-            textures[i] = LoadImage("greystone.png");
-            break;
-        case 1:
-            textures[i] = LoadImage("mossy.png");
-            break;
-        case 2:
-            textures[i] = LoadImage("redbrick.png");
-            break;
-        case 3:
-            textures[i] = LoadImage("wood.png");
-            break;
-        case 4:
-            textures[i] = LoadImage("eagle.png");
-            break;
-        default:
-            break;
-        }
+    Image textures[4];
+    std::string file_name[4] = {"greystone.png", "mossy.png", "redbrick.png", "eagle.png"};
+
+    for (int i = 0; i < 4; i++) {
+        textures[i] = LoadImage(file_name[i].c_str());
         ImageFormat(&textures[i], PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+
+        tex_mips.push_back(ImageCopy(textures[i]));
+
+        int new_height = textures->height;
+        int new_width = textures->width;
+
+        assert(textures->height == textures->width);
+        for (int k = 0; k < log2(textures->height); k++) {
+            Image im_resize = ImageCopy(textures[i]);
+            new_height /= 2;
+            new_width /= 2;
+            ImageResize(&im_resize, new_width, new_height);
+            tex_mips.push_back(im_resize);
+        }
     }
 
     Image screen_im = GenImageColor(scr_width, scr_height, BLACK);
     ImageFormat(&screen_im, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
 
     Texture2D screen_tex = LoadTextureFromImage(screen_im);
+
+    Vector2 g_player_dir = { -1.f, 0.f };
+    Vector2 g_camera_plane = { 0.f, 0.66f }; // is always perpendicular on the player direction
+    Vector2 player_pos = { 20.0f, 3.0f };
 
     SetTargetFPS(60);
     rlImGuiSetup(true);
@@ -213,7 +235,12 @@ int main() {
         }
         else {
             // raycasting loop
+            #pragma omp parallel for
             for (int x = 0; x < scr_width; x++) {
+                Vector2 ray_dir = { 0.f, 0.f };
+                Vector2 player_dir = g_player_dir;
+                Vector2 camera_plane = g_camera_plane;
+
                 float camera_x = 2 * x / float(scr_width) - 1; // x-coordinate in camera space (value from -1 to 1)
                 player_dir = Vector2Normalize(player_dir);
                 camera_plane = Vector2Normalize(camera_plane);
@@ -302,21 +329,23 @@ int main() {
                     tex_id = 1; // mossy
                     break;
                 case BLUE_WALL:
-                    tex_id = 4; // eagle
+                    tex_id = 3; // eagle
                     break;
                 default:
                     break;
                 }
 
+                Vector2 normal;
                 // where exactly the wall was hit (side of tile)
                 float wall_x;
+                Vector2 v2_wall_x = Vector2Add(player_pos, ray);
                 if (side == 0) { // x (vertical side |)
-                    Vector2 v2_wall_x = Vector2Add(player_pos, ray);
                     wall_x = v2_wall_x.y;
+                    normal = { ray.x < 0 ? 1.f : -1.f, 0.f };
                 }
                 else { // y (horizontal side --)
-                    Vector2 v2_wall_x = Vector2Add(player_pos, ray);
                     wall_x = v2_wall_x.x;
+                    normal = { 0.f, ray.y < 0 ? 1.f : -1.f };
                 }
                 wall_x -= floor(wall_x);
 
@@ -332,7 +361,29 @@ int main() {
                 for (int y = draw_start; y < draw_end; y++) {
                     int tex_y = int(tex_pos);
                     tex_pos += step;
-                    ImageDrawPixel(&screen_im, x, y, GetImageColor(textures[tex_id], tex_x, tex_y));
+
+                    float line_height_w = float(scr_height / perp_wall_dist / fov) * abs(Vector2DotProduct(ray_dir, normal));
+
+                    float mip_level = get_mip_level(line_height_w);
+                    Color low_mip;
+                    Color high_mip;
+                    float between = mip_level - floor(mip_level);
+
+                    int low_mip_level = floor(mip_level);
+                    low_mip = image_px_color(low_mip_level, tex_id, tex_x, tex_y);
+                    if(between > 0.01f) {
+                        int high_mip_level = ceil(mip_level);
+                        high_mip = image_px_color(high_mip_level, tex_id, tex_x, tex_y);
+                    } else {
+                        high_mip = low_mip;
+                    }
+
+                    Color final = ColorLerp(low_mip, high_mip, between);
+                    uint8_t* bytes = (uint8_t*)screen_im.data;
+                    bytes[4 * (x + y * scr_width) + 0] = final.r;
+                    bytes[4 * (x + y * scr_width) + 1] = final.g;
+                    bytes[4 * (x + y * scr_width) + 2] = final.b;
+                    bytes[4 * (x + y * scr_width) + 3] = 255;
                 }
                 ImageDrawLine(&screen_im, x, 0, x, draw_start, sky_srgb);
                 ImageDrawLine(&screen_im, x, draw_end, x, scr_height, {100, 100, 100, 255});
@@ -346,7 +397,7 @@ int main() {
             float rot_speed = delta_time;
             // movement
             if (IsKeyDown(KEY_W)) {
-                Vector2 velocity = Vector2Scale(player_dir, move_speed);
+                Vector2 velocity = Vector2Scale(g_player_dir, move_speed);
                 if (map[tile_id(int(player_pos.x + velocity.x), int(player_pos.y))] == EMPTY) {
                     player_pos.x += velocity.x;
                 }
@@ -355,7 +406,7 @@ int main() {
                 }
             }
             if (IsKeyDown(KEY_S)) {
-                Vector2 velocity = Vector2Scale(player_dir, move_speed);
+                Vector2 velocity = Vector2Scale(g_player_dir, move_speed);
                 if (map[tile_id(int(player_pos.x - velocity.x), int(player_pos.y))] == EMPTY) {
                     player_pos.x -= velocity.x;
                 }
@@ -365,12 +416,12 @@ int main() {
             }
             // rotation
             if (IsKeyDown(KEY_A)) {
-                player_dir = Vector2Rotate(player_dir, rot_speed);
-                camera_plane = Vector2Rotate(camera_plane, rot_speed);
+                g_player_dir = Vector2Rotate(g_player_dir, rot_speed);
+                g_camera_plane = Vector2Rotate(g_camera_plane, rot_speed);
             }
             if (IsKeyDown(KEY_D)) {
-                player_dir = Vector2Rotate(player_dir, -rot_speed);
-                camera_plane = Vector2Rotate(camera_plane, -rot_speed);
+                g_player_dir = Vector2Rotate(g_player_dir, -rot_speed);
+                g_camera_plane = Vector2Rotate(g_camera_plane, -rot_speed);
             }
         }
 

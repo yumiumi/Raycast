@@ -8,6 +8,8 @@
 #include <vector>
 #include "imgui_memory_editor.h"
 #include "lighting.hpp"
+#include "Tracy.hpp"
+#include <immintrin.h>
 
 const int scr_height = 720;
 const int scr_width = 1280;
@@ -16,6 +18,7 @@ int map_width = 24;
 int tile_size = 16;
 bool map_editor = false;
 std::vector <Image> tex_mips;
+int tex_sizes_count;
 
 enum TileType {
     EMPTY,
@@ -142,10 +145,11 @@ void rebuild_map(int old_width, int old_height) {
 }
 
 float get_mip_level(float pixels_per_texture) {
+    float last_mip_id = tex_sizes_count - 1;
     // level is the level where there will be 1 texel per pixel
     float level = -log2(pixels_per_texture / 64.f);
-    if (level > 6.f) {
-        return 6.f;
+    if (level > last_mip_id) {
+        return last_mip_id;
     }
     if (level < 0.f) {
         return 0.f;
@@ -153,38 +157,62 @@ float get_mip_level(float pixels_per_texture) {
     return level;
 }
 
+inline
 Color image_px_color(int mip_level, int tex_id, int tex_x, int tex_y) {
-    int id = tex_id * 7 + mip_level;
-    int pos_x = tex_x / pow(2, mip_level);
-    int pos_y = tex_y / pow(2, mip_level);
-    Color mip;
-    uint8_t* bytes = (uint8_t*)tex_mips[id].data;
-    mip.r = bytes[4 * (pos_x + pos_y * tex_mips[id].width) + 0];
-    mip.g = bytes[4 * (pos_x + pos_y * tex_mips[id].width) + 1];
-    mip.b = bytes[4 * (pos_x + pos_y * tex_mips[id].width) + 2];
-    return mip;
+    // _tzcnt_u32(texture_h = 64), 64 = 1000000 in binary
+    // number of 0s indicates the power to which 2 was raised
+    // int tex_sizes_count = _tzcnt_u32(texture_h) + 1;
+
+    int id = tex_id * tex_sizes_count + mip_level;
+
+    tex_x = tex_x >> mip_level;
+    tex_y = tex_y >> mip_level;
+
+    assert(tex_mips.size() > id);
+    Color* pixels = (Color*)tex_mips[id].data;
+
+    return pixels[tex_x * tex_mips[id].width + tex_y];
 }
 
 int main() {
+    ZoneScoped;
     InitWindow(scr_width, scr_height, "Raycast");
 
     parse_map(map_definition);
 
     // textures
     Image textures[4];
+    Image tex_copy[4];
     std::string file_name[4] = {"greystone.png", "mossy.png", "redbrick.png", "eagle.png"};
 
     for (int i = 0; i < 4; i++) {
         textures[i] = LoadImage(file_name[i].c_str());
         ImageFormat(&textures[i], PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
 
+        tex_copy[i] = ImageCopy(textures[i]);
+
+        assert(textures->height == textures->width);
+        for (int y = 0; y < textures->height; y++) {
+            for (int x = 0; x < textures->width; x++) {
+                // switch y and x. (e.g.) when y = 0, x = 1, width = 8:
+                // textures and tex_copy are equal
+                uint8_t* old_tex = (uint8_t*)textures[i].data;
+                uint8_t* new_tex = (uint8_t*)tex_copy[i].data;
+
+                old_tex[4 * (y * textures->width + x) + 0] = new_tex[4 * (x * textures->height + y) + 0];
+                old_tex[4 * (y * textures->width + x) + 1] = new_tex[4 * (x * textures->height + y) + 1];
+                old_tex[4 * (y * textures->width + x) + 2] = new_tex[4 * (x * textures->height + y) + 2];
+                old_tex[4 * (y * textures->width + x) + 3] = new_tex[4 * (x * textures->height + y) + 3];
+            }
+        }
+
         tex_mips.push_back(ImageCopy(textures[i]));
 
         int new_height = textures->height;
         int new_width = textures->width;
 
-        assert(textures->height == textures->width);
-        for (int k = 0; k < log2(textures->height); k++) {
+        int sizes_count = log2(textures->height);
+        for (int k = 0; k < sizes_count; k++) {
             Image im_resize = ImageCopy(textures[i]);
             new_height /= 2;
             new_width /= 2;
@@ -192,9 +220,10 @@ int main() {
             tex_mips.push_back(im_resize);
         }
     }
+    tex_sizes_count = int(log2(textures->height)) + 1.f;
 
     Image screen_im = GenImageColor(scr_width, scr_height, BLACK);
-    ImageFormat(&screen_im, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    ImageFormat(&screen_im, PIXELFORMAT_UNCOMPRESSED_R8G8B8);
 
     Texture2D screen_tex = LoadTextureFromImage(screen_im);
 
@@ -202,7 +231,7 @@ int main() {
     Vector2 g_camera_plane = { 0.f, 0.66f }; // is always perpendicular on the player direction
     Vector2 player_pos = { 20.0f, 3.0f };
 
-    SetTargetFPS(60);
+    //SetTargetFPS(60);
     rlImGuiSetup(true);
     while (!WindowShouldClose()) {
         
@@ -237,6 +266,8 @@ int main() {
             // raycasting loop
             #pragma omp parallel for
             for (int x = 0; x < scr_width; x++) {
+                ZoneScopedN("collumn");
+                ZoneTextF("%d", x);
                 Vector2 ray_dir = { 0.f, 0.f };
                 Vector2 player_dir = g_player_dir;
                 Vector2 camera_plane = g_camera_plane;
@@ -278,21 +309,24 @@ int main() {
                 side_dist.y = ray_dir.y < 0 ? fract.y : 1.f - fract.y;
                 side_dist = Vector2Multiply(side_dist, delta_dist);
 
-                // perform DDA
-                while (hit == 0) {
-                    if (side_dist.x < side_dist.y) {
-                        side_dist.x += delta_dist.x;
-                        map_x += step_x;
-                        side = 0;
-                    }
-                    else {
-                        side_dist.y += delta_dist.y;
-                        map_y += step_y;
-                        side = 1;
-                    }
-                    // check if ray has hit a wall
-                    if (map[tile_id(map_x, map_y)] != EMPTY) {
-                        hit = 1;
+                {
+                    ZoneScopedN("DDA");
+                    // perform DDA
+                    while (hit == 0) {
+                        if (side_dist.x < side_dist.y) {
+                            side_dist.x += delta_dist.x;
+                            map_x += step_x;
+                            side = 0;
+                        }
+                        else {
+                            side_dist.y += delta_dist.y;
+                            map_y += step_y;
+                            side = 1;
+                        }
+                        // check if ray has hit a wall
+                        if (map[tile_id(map_x, map_y)] != EMPTY) {
+                            hit = 1;
+                        }
                     }
                 }
 
@@ -358,32 +392,43 @@ int main() {
                 // Starting texture coordinate
                 float tex_pos = (float(draw_start) - scr_height/2.f + line_height/2.f) * step;
 
-                for (int y = draw_start; y < draw_end; y++) {
-                    int tex_y = int(tex_pos);
-                    tex_pos += step;
+                float line_height_w = float(scr_height / perp_wall_dist / fov) * abs(Vector2DotProduct(ray_dir, normal));
 
-                    float line_height_w = float(scr_height / perp_wall_dist / fov) * abs(Vector2DotProduct(ray_dir, normal));
+                float mip_level = get_mip_level(line_height_w);
 
-                    float mip_level = get_mip_level(line_height_w);
-                    Color low_mip;
-                    Color high_mip;
-                    float between = mip_level - floor(mip_level);
+                float between = mip_level - floor(mip_level);
 
-                    int low_mip_level = floor(mip_level);
-                    low_mip = image_px_color(low_mip_level, tex_id, tex_x, tex_y);
-                    if(between > 0.01f) {
-                        int high_mip_level = ceil(mip_level);
-                        high_mip = image_px_color(high_mip_level, tex_id, tex_x, tex_y);
-                    } else {
-                        high_mip = low_mip;
+                int low_mip_level = floor(mip_level);
+                int high_mip_level = ceil(mip_level);
+
+                {
+                    ZoneScopedN("pixels");
+                    ZoneTextF("%d", draw_end - draw_start);
+                    for (int y = draw_start; y < draw_end; y++) {
+                        int tex_y = int(tex_pos);
+                        tex_pos += step;
+
+                        Color final;
+                        {
+                            Color low_mip = image_px_color(low_mip_level, tex_id, tex_x, tex_y);
+                            if (true || between > 0.01f) {
+                                Color high_mip = image_px_color(high_mip_level, tex_id, tex_x, tex_y);
+                                final.r = float(low_mip.r) + (float(high_mip.r) - float(low_mip.r)) * between;
+                                final.g = float(low_mip.g) + (float(high_mip.g) - float(low_mip.g)) * between;
+                                final.b = float(low_mip.b) + (float(high_mip.b) - float(low_mip.b)) * between;
+                            }
+                            else {
+                                final = low_mip;
+                            }
+                        }
+
+                        {
+                            uint8_t* bytes = (uint8_t*)screen_im.data;
+                            bytes[3 * (x + y * scr_width) + 0] = final.r;
+                            bytes[3 * (x + y * scr_width) + 1] = final.g;
+                            bytes[3 * (x + y * scr_width) + 2] = final.b;
+                        }
                     }
-
-                    Color final = ColorLerp(low_mip, high_mip, between);
-                    uint8_t* bytes = (uint8_t*)screen_im.data;
-                    bytes[4 * (x + y * scr_width) + 0] = final.r;
-                    bytes[4 * (x + y * scr_width) + 1] = final.g;
-                    bytes[4 * (x + y * scr_width) + 2] = final.b;
-                    bytes[4 * (x + y * scr_width) + 3] = 255;
                 }
                 ImageDrawLine(&screen_im, x, 0, x, draw_start, sky_srgb);
                 ImageDrawLine(&screen_im, x, draw_end, x, scr_height, {100, 100, 100, 255});
@@ -487,7 +532,9 @@ int main() {
 
                 ImGui::End();
             rlImGuiEnd();
+            DrawFPS(10, 10);
         EndDrawing();
+        FrameMark;
     }
     CloseWindow();
     return 0;
